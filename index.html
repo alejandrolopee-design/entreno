@@ -2461,79 +2461,54 @@ function openMeso(){
   openModal();
 }
 function closeMeso(){
-  if(!confirm('¿Cerrar mesociclo? Se guardará en el historial y los pesos actualizados quedarán como base de la nueva S1.')) return;
+  if(!confirm('¿Cerrar mesociclo? Se guardará en el historial y los pesos de la S3 pasarán a ser la base de la nueva S1.')) return;
 
-  // ── 1. Historial: foto inmutable del ciclo completo ─────────────────────
+  // 1. Deep-clone histórico completo (foto inmutable del ciclo)
   S.history.unshift({
-    date:       new Date().toLocaleDateString('es-ES'),
-    routine:    S.routines.find(r=>r.id===S.currentRoutineId)?.name||'Rutina',
-    days:       JSON.parse(JSON.stringify(CU.days)),
-    weeks:      JSON.parse(JSON.stringify(S.weeks)),
-    reps:       JSON.parse(JSON.stringify(S.reps)),
-    sets:       JSON.parse(JSON.stringify(S.sets)),
+    date:     new Date().toLocaleDateString('es-ES'),
+    routine:  S.routines.find(r=>r.id===S.currentRoutineId)?.name||'Rutina',
+    days:     JSON.parse(JSON.stringify(CU.days)),
+    weeks:    JSON.parse(JSON.stringify(S.weeks)),
+    reps:     JSON.parse(JSON.stringify(S.reps)),
+    sets:     JSON.parse(JSON.stringify(S.sets)),
     pesoSemana: JSON.parse(JSON.stringify(S.pesoSemana)),
   });
 
-  // ── 2. Mapa de pesos por NOMBRE (transferible entre rutinas) ────────────
-  // Prioridad: proximoPesoSugerido (aceptado en S3) > S3 congelado > ex.peso
-  const mapaPesos={};
+  // 2. Promocionar pesos sobre los días existentes (NO mkDefaultDays)
+  //    Prioridad: proximoPesoSugerido > S3 congelado > ex.peso actual
+  //    No se tocan: ex.method, ex.series, ex.repes, ex.name, ex.hasPcts
   CU.days.forEach((day,di)=>{
     day.exs.forEach((ex,ei)=>{
-      const s3frozen=S.pesoSemana['2_'+di+'_'+ei];
-      mapaPesos[ex.name]=
-        (ex.proximoPesoSugerido!=null) ? ex.proximoPesoSugerido :
-        (s3frozen!=null)               ? s3frozen :
+      const suggested  = ex.proximoPesoSugerido;
+      const s3frozen   = S.pesoSemana['2_'+di+'_'+ei];
+      const newPeso =
+        (suggested!==undefined && suggested!==null) ? suggested :
+        (s3frozen!==undefined)                       ? s3frozen  :
         ex.peso;
-    });
-  });
-
-  // ── 3. Aplicar pesos a TODAS las rutinas por nombre ─────────────────────
-  // No toca: method, series, repes, name, hasPcts — solo peso y e1rm
-  S.routines.forEach(rut=>{
-    if(!rut.days) return;
-    rut.days.forEach(day=>{
-      if(!day.exs) return;
-      day.exs.forEach(ex=>{
-        if(mapaPesos[ex.name]!==undefined){
-          ex.peso=mapaPesos[ex.name];
-          ex.e1rm=mapaPesos[ex.name];
-        }
-        delete ex.proximoPesoSugerido;
-        delete ex._nextPeso;
-      });
-    });
-  });
-
-  // También actualizar CU.days directamente (puede no coincidir con S.routines
-  // si el usuario edita sin guardar en la rutina)
-  CU.days.forEach(day=>{
-    day.exs.forEach(ex=>{
-      if(mapaPesos[ex.name]!==undefined){
-        ex.peso=mapaPesos[ex.name];
-        ex.e1rm=mapaPesos[ex.name];
-      }
+      ex.peso  = newPeso;
+      ex.e1rm  = newPeso;
       delete ex.proximoPesoSugerido;
       delete ex._nextPeso;
     });
   });
 
-  // ── 4. Resetear estado de ejecución — S.currentRoutineId NO se toca ─────
+  // 3. Resetear estado de ejecución — mantener estructura de días y rutina
   S.wk=0; S.reps={}; S.sets={}; S.notes={}; S.notesOpen={}; S.sessDay=null;
   S.steps=mkSteps();
   S.pesoSemana={}; // hoja en blanco para el nuevo ciclo
 
-  // ── 5. Pre-congelar S1 con los pesos por nombre ──────────────────────────
+  // 4. Pre-congelar S1 con los pesos recién promocionados
   CU.days.forEach((day,di)=>{
     day.exs.forEach((ex,ei)=>{
       S.pesoSemana['0_'+di+'_'+ei]=ex.peso;
     });
   });
 
-  // ── 6. Persistir y navegar ───────────────────────────────────────────────
+  // 5. Persistir — un refresh arranca con la nueva S1 correcta
   saveState();
   closeModal();
   render();
-  showSimpleToast('¡Mesociclo cerrado! Pesos actualizados en todas las rutinas.','success');
+  showSimpleToast('¡Mesociclo cerrado! Nueva S1 lista con los pesos del ciclo anterior.','success');
 }
 
 
