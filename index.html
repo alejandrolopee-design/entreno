@@ -665,6 +665,7 @@ const S={
   metrics:[],
   inventory:{},
   customExercises:[],
+  substMemory:{},
   pesoSemana:{},
 };
 
@@ -688,6 +689,7 @@ function saveState(){
     currentRoutineId:S.currentRoutineId,bodyWeight:S.bodyWeight,
     metrics:S.metrics,inventory:S.inventory,customExercises:S.customExercises,
     pesoSemana:S.pesoSemana,
+    substMemory:S.substMemory,
   });
 }
 function loadState(){
@@ -704,6 +706,7 @@ function loadState(){
   if(raw.inventory)S.inventory=raw.inventory;
   if(raw.customExercises)S.customExercises=raw.customExercises;
   if(raw.pesoSemana)S.pesoSemana=raw.pesoSemana;
+  if(raw.substMemory)S.substMemory=raw.substMemory;
   CU.days=raw.days||mkDefaultDays();
   // Migrate old exercise objects — add any missing properties
   CU.days.forEach(day=>{
@@ -1055,18 +1058,22 @@ function togSet(di,ei,si){
 
   // ── 5/3/1 ────────────────────────────────────────────────────────────────
   if(method==='5/3/1'){
-    // S3 AMRAP: calculate e1RM with Epley, suggest S4 peso + show combined toast
-    if(isWeek3&&set.isAmrap&&repsVal>0){
-      const newE1rm=epley(set.kg,repsVal);
+    // S3 AMRAP: any rep >= 1 triggers Epley e1RM (no threshold filter)
+    if(isWeek3&&set.isAmrap&&repsVal>=1){
+      const newE1rm=epley(set.kg,repsVal); // peso*(1+reps/30)
       const prevE=getE1RM(ex);
-      if(newE1rm>prevE*1.02){
-        // S4 consolidation: TM stays same, repsBase revert to ex.repes
-        // User confirms; we schedule _nextPeso for W4 as TM*0.9 (handled by getSets)
-        // Store suggested — don't touch ex.peso yet (immutability)
-        ex.proximoPesoSugerido=rd(newE1rm*0.9);
-        ex.e1rm=newE1rm;
-        storeE1RMHistory(ex.name,newE1rm);
-        showProgressToast(di,ei,ex,{type:'weight_up',sugKg:rd(newE1rm*0.9),newE1rm:rd(newE1rm)});
+      const grp=muscleGroupOf(ex.name);
+      const jump=grp==='legs'?5:2.5;
+      // Always show toast — even if new e1RM is lower (lets user decide)
+      ex.proximoPesoSugerido=rd(newE1rm*0.9);
+      ex.e1rm=newE1rm;
+      storeE1RMHistory(ex.name,newE1rm);
+      if(newE1rm>prevE){
+        // Improvement: suggest TM bump
+        showProgressToast(di,ei,ex,{type:'weight_up',sugKg:rd(prevE+jump),newE1rm:rd(newE1rm)});
+      } else {
+        // No improvement: show e1RM only (no weight suggestion)
+        showProgressToast(di,ei,ex,{type:'e1rm_only',newE1rm:rd(newE1rm)});
       }
     }
     rSess();return;
@@ -1091,19 +1098,30 @@ function togSet(di,ei,si){
         showProgressToast(di,ei,ex,{type:'weight_up',sugKg:pct5});
       }
     } else {
-      // S1-S2: only flag zona naranja (+5 reps)
+      // S1-S2: zona naranja (+5 reps) OR all sets met target → small suggestion
       if(repsVal>=baseR+5){
+        // Zona naranja: big jump
         showProgressToast(di,ei,ex,{type:'weight_big_up',sugKg:rd(ex.peso+bigJump),repsDone:repsVal,baseR});
+      } else if(repsVal>=baseR){
+        // Cumplió objetivo en todas las series efectivas: check before toasting
+        const _allMet=sets.every((s,idx2)=>{
+          if(s.isWarmup)return true;
+          const r=parseInt(getRep(di,ei,idx2)||'0');
+          return r>=(s.reps>0?s.reps:baseR);
+        });
+        if(_allMet){
+          const smallJump=grp==='legs'?2.5:1.25;
+          showProgressToast(di,ei,ex,{type:'weight_up',sugKg:rd(ex.peso+smallJump)});
+        }
       }
     }
   }
 
-  // AMRAP set: estimate e1RM
-  if(set.isAmrap&&repsVal>0){
+  // AMRAP set (non-5/3/1): estimate e1RM with any rep >= 1
+  if(set.isAmrap&&repsVal>=1){
     const est=epley(set.kg,repsVal);
-    const prevE=getE1RM(ex);
-    if(est>prevE*1.02&&!document.getElementById('prog-toast')){
-      showProgressToast(di,ei,ex,{type:'e1rm_only',newE1rm:est});
+    if(!document.getElementById('prog-toast')){
+      showProgressToast(di,ei,ex,{type:'e1rm_only',newE1rm:rd(est)});
     }
   }
 
@@ -1383,6 +1401,10 @@ function goTab(t){
   });
   render();
 }
+
+// renderEntHome: alias for render() used by closeMeso and external callers
+function renderEntHome(){ render(); }
+
 function render(){
   if(S.tab==='ent'){S.sessDay===null?rHome():rSess();}
   if(S.tab==='rut')rRut();
@@ -1513,6 +1535,311 @@ function renderSetRow(di,ei,si,set,br,exMethod,rir,deload){
 }
 
 // ── renderExCard ──────────────────────────────────────────────────────────────
+
+// ── Quick-edit peso from session ─────────────────────────────────────────────
+
+// ── Shared exercise search widget ────────────────────────────────────────────
+var _exSearchRegistry={};  // keyed by listId — stores rows + callback
+
+function buildExSearchHTML(opts){
+  const {inputId,listId,onSelectJS,excludeName,highlightName,label}=opts;
+
+  const allExs=[];
+  Object.keys(EXERCISE_DB).forEach(function(grp){
+    EXERCISE_DB[grp].forEach(function(e){
+      if(!excludeName||e.n!==excludeName) allExs.push({n:e.n,g:grp});
+    });
+  });
+  Object.values(S.inventory||{}).forEach(function(e){
+    if((!excludeName||e.n!==excludeName)&&!allExs.find(function(x){return x.n===e.n;}))
+      allExs.push({n:e.n,g:'Mis ejercicios'});
+  });
+  allExs.sort(function(a,b){
+    if(highlightName){if(a.n===highlightName)return-1;if(b.n===highlightName)return 1;}
+    return a.n.localeCompare(b.n);
+  });
+
+  _exSearchRegistry[listId]={rows:allExs,onSelectJS:onSelectJS};
+
+  const topRows=allExs.slice(0,40).map(function(e){return _exRow(e.n,e.g,highlightName);}).join('');
+
+  const memBanner=highlightName
+    ?('<div style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;'
+      +'background:var(--accent-l);margin-bottom:8px">'
+      +'<span style="font-size:11px;font-weight:500;color:var(--accent)">★ Última vez:</span>'
+      +'<button data-n="'+highlightName.replace(/"/g,'&quot;')+'" data-lid="'+listId+'" onclick="_exRowClick(this)"'
+      +' style="border:none;background:transparent;font-family:var(--font);font-size:13px;'
+      +'font-weight:600;color:var(--accent);cursor:pointer;padding:0">'+highlightName+'</button>'
+      +'</div>')
+    :'';
+
+  return '<div style="margin-bottom:6px">'
+    +'<label class="form-lbl" style="margin-bottom:6px;display:block">'+(label||'Ejercicio')+'</label>'
+    +memBanner
+    +'<input id="'+inputId+'" class="finp" type="text" placeholder="Buscar ejercicio..." '
+    +'data-lid="'+listId+'" style="margin-bottom:6px" '
+    +'oninput="_filterExSearch(this.value,this.dataset.lid)" autocomplete="off">'
+    +'<div id="'+listId+'" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);'
+    +'border-radius:10px;background:var(--surface2)">'+topRows+'</div>'
+    +'</div>';
+}
+
+function _exRow(name,grp,highlight,onSelectJS){
+  const isHL=name===highlight;
+  const safeN=name.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+  return '<button onclick="_exRowInline(\'' + safeN + '\')" data-n="'+name.replace(/"/g,'&quot;')+'" '+
+    'style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:9px 12px;'+
+    'border:none;background:'+(isHL?'var(--accent-l)':'transparent')+';'+
+    'font-family:var(--font);font-size:13px;cursor:pointer;'+
+    'color:'+(isHL?'var(--accent)':'var(--text)')+';'+
+    'border-bottom:1px solid var(--border);text-align:left">'+
+    '<span>'+(isHL?'★ ':'')+name+'</span>'+
+    '<span style="font-size:10px;color:var(--text3)">'+grp+'</span>'+
+  '</button>';
+}
+
+// Called by each row button — finds nearest list container, looks up callback
+function _exRowInline(name){
+  // Find the active modal's listId by checking which registry entry is visible
+  const keys=Object.keys(_exSearchRegistry);
+  for(const lid of keys){
+    const el=document.getElementById(lid);
+    if(el){
+      const cb=_exSearchRegistry[lid].onSelectJS;
+      _execExCallback(cb,name);
+      return;
+    }
+  }
+}
+function _exRowClick(btn){
+  const name=btn.dataset.n;
+  _exRowInline(name);
+}
+function _execExCallback(onSelectJS,name){
+  // onSelectJS is a string like '_applySubDirect(ARG,0,1)' or 'function(n){...}(ARG)'
+  const code=onSelectJS.replace(/ARG/g,"'"+name.replace(/'/g,"\\'")+("'"));
+  try{eval(code);}catch(e){console.error('exSearch callback error:',e);}
+}
+function _filterExSearch(query,listId){
+  const el=document.getElementById(listId);if(!el)return;
+  const reg=_exSearchRegistry[listId];if(!reg)return;
+  const q=(query||'').toLowerCase().trim();
+  const filtered=q?reg.rows.filter(r=>r.n.toLowerCase().includes(q)):reg.rows.slice(0,40);
+  el.innerHTML=filtered.map(e=>_exRow(e.n,e.g,null,reg.onSelectJS)).join('');
+  if(!filtered.length)
+    el.innerHTML='<div style="padding:12px;font-size:13px;color:var(--text3);text-align:center">Sin resultados</div>';
+}
+
+
+function openEditEx(di,ei){
+  const ex=CU.days[di].exs[ei];
+  const methods=['RIR','5/3/1','5x5','Pirámide','Rampa','Cluster'];
+  const methOpts=methods.map(m=>'<option value="'+m+'"'+((ex.method||'RIR')===m?' selected':'')+'>'+m+'</option>').join('');
+  const curPeso=getFrozenWeight(S.wk,di,ei,ex)||ex.peso||0;
+  // onSelectJS: selects exercise + updates peso field with inherited weight
+  const onSelectJS='function(n){document.getElementById(\'qedit-exname\').value=n;var inh=_findInheritedPeso(n);if(inh>0)document.getElementById(\'qedit-peso\').value=inh;}(ARG)';
+  const searchHTML=buildExSearchHTML({
+    inputId:'qedit-search',listId:'qedit-list',
+    onSelectJS,excludeName:null,highlightName:ex.name,label:'Ejercicio (cambio permanente)'
+  });
+  document.getElementById('mcont').className='modal wide';
+  document.getElementById('mcont').innerHTML=
+    '<div class="modal-title">Editar ejercicio</div>'+
+    '<div style="font-size:11px;color:var(--text3);margin-bottom:10px">'+
+      'Cambios de <b>nombre</b> se aplican a esta sesión y futuras. Las semanas pasadas no se tocan.</div>'+
+    '<input type="hidden" id="qedit-exname" value="'+ex.name+'">'+
+    searchHTML+
+    '<div class="form-row" style="margin-top:8px"><label class="form-lbl">'+(ex.isBodyweight?'Lastre extra (kg)':'Peso (kg)')+'</label>'+
+      '<input id="qedit-peso" class="finp" type="number" min="0" max="500" step="0.25" value="'+curPeso+'">'+
+    '</div>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'+
+      '<div><label class="form-lbl">Series</label>'+
+        '<input id="qedit-series" class="finp" type="number" min="1" max="12" value="'+ex.series+'"></div>'+
+      '<div><label class="form-lbl">Reps base</label>'+
+        '<input id="qedit-repes" class="finp" type="number" min="1" max="30" value="'+ex.repes+'"></div>'+
+    '</div>'+
+    '<div class="form-row"><label class="form-lbl">Método</label>'+
+      '<select id="qedit-method" class="fsel">'+methOpts+'</select>'+
+    '</div>'+
+    '<div class="form-row" style="display:flex;align-items:center;gap:10px">'+
+      '<input type="checkbox" id="qedit-bw" style="width:16px;height:16px;accent-color:var(--accent)"'+(ex.isBodyweight?' checked':'')+'>'+
+      '<label for="qedit-bw" style="font-size:13px;cursor:pointer">Peso corporal (+ lastre opcional)</label>'+
+    '</div>'+
+    '<div class="mact" style="gap:8px;margin-top:14px">'+
+      '<button class="bcanc" onclick="closeModal()">Cancelar</button>'+
+      '<button class="bprim" data-di="'+di+'" data-ei="'+ei+'" onclick="applyEditEx(this)">Guardar</button>'+
+    '</div>';
+  openModal();
+}
+function applyEditEx(btn){
+  const di=parseInt(btn.dataset.di),ei=parseInt(btn.dataset.ei);
+  const ex=CU.days[di].exs[ei];
+  const newPeso=parseFloat(document.getElementById('qedit-peso')?.value||'0');
+  const newSeries=parseInt(document.getElementById('qedit-series')?.value||'0')||ex.series;
+  const newRepes=parseInt(document.getElementById('qedit-repes')?.value||'0')||ex.repes;
+  const newMethod=document.getElementById('qedit-method')?.value||ex.method||'RIR';
+  const newBW=document.getElementById('qedit-bw')?.checked||false;
+  const newName=(document.getElementById('qedit-exname')?.value||ex.name).trim();
+  if(newPeso<0){showSimpleToast('Introduce un peso válido','warn');return;}
+  // Permanent name change: update this session + all routines
+  if(newName&&newName!==ex.name){
+    const oldName=ex.name;
+    ex.name=newName;
+    S.routines.forEach(rut=>{
+      (rut.days||[]).forEach(day=>{
+        (day.exs||[]).forEach(e=>{ if(e.name===oldName) e.name=newName; });
+      });
+    });
+  }
+  ex.method=newMethod;
+  ex.isBodyweight=newBW;
+
+  // Freeze new peso for current week (visible immediately)
+  S.pesoSemana[S.wk+'_'+di+'_'+ei]=newPeso;
+
+  // Update ex base for future weeks (unidirectional — past weeks stay frozen)
+  const hasPastSets=Object.keys(S.sets).some(k=>{
+    const p=k.split('_');return parseInt(p[0])<S.wk&&parseInt(p[1])===di&&parseInt(p[2])===ei;
+  });
+  if(!hasPastSets) ex.peso=newPeso;
+  ex._nextPeso=newPeso;
+  ex.series=newSeries;
+  ex.repes=newRepes;
+
+  // Unfreeze future unfrozen weeks so they recalculate
+  [1,2,3].forEach(wk=>{
+    if(wk>S.wk&&!isWeekFrozen(wk,di,ei)) delete S.pesoSemana[wk+'_'+di+'_'+ei];
+  });
+
+  saveState();closeModal();rSess();
+}
+
+
+// ── Sustituir ejercicio (solo hoy) ───────────────────────────────────────────
+function openSubstituteEx(di,ei){
+  const ex=CU.days[di].exs[ei];
+  const memSub=S.substMemory&&S.substMemory[ex.name];
+  // onSelectJS: one-tap apply — click directly applies the substitution
+  const onSelectJS='_applySubDirect(ARG,'+di+','+ei+')';
+  const searchHTML=buildExSearchHTML({
+    inputId:'sub-search',listId:'sub-list',
+    onSelectJS,excludeName:ex.name,
+    highlightName:ex._tmpName||memSub||null,
+    label:'Toca un ejercicio para sustituir (solo hoy)'
+  });
+  document.getElementById('mcont').className='modal wide';
+  document.getElementById('mcont').innerHTML=
+    '<div class="modal-title">🔄 Sustituir</div>'+
+    '<div style="font-size:12px;color:var(--text2);margin-bottom:6px">'+
+      'Actual: <b>'+ex.name+'</b> → Solo esta sesión. La rutina no cambia.</div>'+
+    searchHTML+
+    '<div class="mact" style="gap:8px;margin-top:8px">'+
+      '<button class="bcanc" onclick="closeModal()">'+(ex._tmpName?'Quitar sustitución':'Cancelar')+'</button>'+
+    '</div>';
+  openModal();
+  setTimeout(()=>document.getElementById('sub-search')?.focus(),80);
+}
+// Direct one-tap apply from search list
+function _applySubDirect(newName,di,ei){
+  const ex=CU.days[di].exs[ei];
+  if(!newName||newName===ex.name){delete ex._tmpName;saveState();closeModal();rSess();return;}
+  ex._tmpName=newName;
+  if(!S.substMemory)S.substMemory={};
+  S.substMemory[ex.name]=newName;
+  const inh=_findInheritedPeso(newName);
+  if(inh>0){ex._tmpPeso=inh;S.pesoSemana[S.wk+'_'+di+'_'+ei]=inh;}
+  saveState();closeModal();rSess();
+  showSimpleToast('"'+newName+'" en lugar de "'+ex.name+'" — solo hoy','success');
+}
+function applySubstituteEx(btn){
+  const di=parseInt(btn.dataset.di),ei=parseInt(btn.dataset.ei);
+  const ex=CU.days[di].exs[ei];
+  const newName=(document.getElementById('sub-search')?.value||'').trim(); // fallback if user typed manually
+  if(!newName){showSimpleToast('Elige un ejercicio del catálogo','warn');return;}
+  if(newName===ex.name){
+    delete ex._tmpName;
+  } else {
+    ex._tmpName=newName;
+    // Remember this substitution for future sessions
+    if(!S.substMemory)S.substMemory={};
+    S.substMemory[ex.name]=newName;
+    // Inherit peso from existing data for this exercise (don't start at 0)
+    const inherited=_findInheritedPeso(newName);
+    if(inherited>0){
+      ex._tmpPeso=inherited;
+      S.pesoSemana[S.wk+'_'+di+'_'+ei]=inherited;
+    }
+  }
+  saveState();closeModal();rSess();
+  if(ex._tmpName) showSimpleToast('"'+newName+'" hoy en lugar de "'+ex.name+'"','success');
+}
+function _findInheritedPeso(exName){
+  // Search all routines for last known peso of this exercise
+  let best=0;
+  S.routines.forEach(rut=>{
+    (rut.days||[]).forEach(day=>{
+      (day.exs||[]).forEach(ex=>{
+        if(ex.name===exName&&(ex.peso||0)>best) best=ex.peso||0;
+      });
+    });
+  });
+  // Also check CU.days
+  (CU.days||[]).forEach(day=>{
+    (day.exs||[]).forEach(ex=>{
+      if(ex.name===exName&&(ex.peso||0)>best) best=ex.peso||0;
+    });
+  });
+  // Also check S.inventory e1rm
+  if(S.inventory&&S.inventory[exName]&&(S.inventory[exName].e1rm||0)>best)
+    best=S.inventory[exName].e1rm||0;
+  return best;
+}
+
+
+// ── Setup notes (persistent, per-exercise, survives sessions) ────────────────
+// Stored in S.inventory[exName].setup — never cleared between sessions/mesocycles
+function openSetupNote(exName){
+  if(!S.inventory)S.inventory={};
+  if(!S.inventory[exName])S.inventory[exName]={n:exName,t:'custom',desc:''};
+  const current=S.inventory[exName].setup||'';
+  document.getElementById('mcont').className='modal';
+  document.getElementById('mcont').innerHTML=
+    '<div class="modal-title">📐 Setup — '+exName+'</div>'+
+    '<div style="font-size:12px;color:var(--text2);line-height:1.5;margin-bottom:12px">'+
+      'Altura de asiento, agarre, posición de pies... lo que necesites recordar cada sesión.'+
+    '</div>'+
+    '<textarea id="setup-input" rows="6" placeholder="Ej: Banco a 4ª posición, agarre cerrado a 62cm, escápulas retraídas antes de bajar..."'+
+      ' style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;'+
+      'background:var(--surface2);font-family:var(--font);font-size:13px;color:var(--text);'+
+      'resize:vertical;line-height:1.6;box-sizing:border-box">'+current+'</textarea>'+
+    '<div style="font-size:11px;color:var(--text3);margin-top:6px;margin-bottom:12px">'+
+      '💡 Esta nota se mantiene entre sesiones y mesociclos.</div>'+
+    '<div class="mact" style="gap:8px">'+
+      '<button class="bcanc" onclick="closeModal()">Cerrar</button>'+
+      '<button class="bprim" data-n="'+exName.replace(/"/g,'&quot;')+'" onclick="saveSetupNote(this)">Guardar setup</button>'+
+    '</div>';
+  openModal();
+  setTimeout(()=>{
+    const ta=document.getElementById('setup-input');
+    if(ta){ta.focus();ta.selectionStart=ta.selectionEnd=ta.value.length;}
+  },80);
+}
+
+function saveSetupNote(btn){
+  const exName=btn.dataset.n;
+  const note=(document.getElementById('setup-input')?.value||'').trim();
+  if(!S.inventory)S.inventory={};
+  if(!S.inventory[exName])S.inventory[exName]={n:exName,t:'custom',desc:''};
+  S.inventory[exName].setup=note;
+  saveState();
+  closeModal();
+  showSimpleToast('Setup guardado: '+exName,'success');
+}
+
+function getSetupNote(exName){
+  return(S.inventory&&S.inventory[exName]&&S.inventory[exName].setup)||'';
+}
+
 function renderExCard(di,ei,ex,sets,method,rir,deload){
   const exMethod=ex.method||method;
   const br=baseReps(ex,S.wk);
@@ -1551,11 +1878,14 @@ function renderExCard(di,ei,ex,sets,method,rir,deload){
     ' ondrop="'+_drop+'"','>'].join('')
     +'<div class="ex-top">'
     +'<span style="font-size:16px;color:var(--text3);cursor:grab;margin-right:4px;flex-shrink:0" title="Arrastra para reordenar">⠿</span>'
-      +'<button class="ex-namebtn" onclick="openEdit('+di+','+ei+')">'+ex.name+'</button>'
-      +'<button class="bxs" onclick="openEdit('+di+','+ei+')">Editar</button>'
+      +'<button class="ex-namebtn" onclick="openEdit('+di+','+ei+')">'+ex.name+(ex._tmpName?'<span style="font-size:10px;color:var(--accent);margin-left:4px">(sustituido)</span>':'')+'</button>'
+      +'<button class="bxs" onclick="openEditEx('+di+','+ei+')">Editar</button>'
+      +'<button class="bxs" onclick="openSubstituteEx('+di+','+ei+')">🔄 Sustituir</button>'
       +'<button class="bxs" onclick="openTecnica(\''+ex.name.replace(/'/g,"\\'")+'\')">Técnica</button>'
+      +'<button class="bxs" onclick="openSetupNote(\''+ex.name.replace(/'/g,"\\'")+'\')" style="'+(getSetupNote(ex.name)?'border-color:var(--accent);color:var(--accent)':'')+'">Setup'+(getSetupNote(ex.name)?' ✓':'')+'</button>'
       +'<button class="bxs" onclick="togNote('+di+','+ei+')">+ Nota</button>'
     +'</div>'
+    +(getSetupNote(ex.name)?'<div style="display:flex;align-items:flex-start;gap:8px;padding:8px 12px;'+'background:rgba(var(--accent-rgb,13,107,80),.06);border-radius:8px;margin:6px 0 2px;border-left:3px solid var(--accent)">'+'<span style="font-size:13px;flex-shrink:0">📐</span>'+'<div style="font-size:12px;color:var(--text2);line-height:1.5;white-space:pre-wrap">'+getSetupNote(ex.name)+'</div></div>':'')
     +'<div class="ex-meta">'
       +'<span>'+metaInfo+'</span>'
       +'<span style="font-family:var(--mono);font-weight:600;color:var(--accent)">'+rmDisplay+'</span>'
@@ -1572,6 +1902,51 @@ function renderExCard(di,ei,ex,sets,method,rir,deload){
 }
 
 // ── rSess (thin orchestrator) ─────────────────────────────────────────────────
+
+// ── Añadir ejercicio extra a la sesión de hoy ────────────────────────────────
+function openAddExtraEx(){
+  document.getElementById('mcont').className='modal';
+  document.getElementById('mcont').innerHTML=
+    '<div class="modal-title">+ Ejercicio extra hoy</div>'+
+    '<div style="font-size:12px;color:var(--text2);margin-bottom:12px">'+
+      'Se añade solo a la sesión de hoy. No modifica tu rutina base.</div>'+
+    '<div class="form-row"><label class="form-lbl">Nombre</label>'+
+      '<input id="extra-name" class="finp" type="text" placeholder="Ej: Curl de concentración...">'+
+    '</div>'+
+    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">'+
+      '<div><label class="form-lbl">Peso (kg)</label>'+
+        '<input id="extra-peso" class="finp" type="number" min="0" step="0.25" value="20"></div>'+
+      '<div><label class="form-lbl">Series</label>'+
+        '<input id="extra-series" class="finp" type="number" min="1" max="10" value="3"></div>'+
+      '<div><label class="form-lbl">Reps</label>'+
+        '<input id="extra-repes" class="finp" type="number" min="1" max="30" value="10"></div>'+
+    '</div>'+
+    '<div class="mact" style="gap:8px;margin-top:14px">'+
+      '<button class="bcanc" onclick="closeModal()">Cancelar</button>'+
+      '<button class="bprim" onclick="confirmAddExtraEx()">Añadir a la sesión</button>'+
+    '</div>';
+  openModal();
+  setTimeout(()=>document.getElementById('extra-name')?.focus(),100);
+}
+function confirmAddExtraEx(){
+  const name=(document.getElementById('extra-name')?.value||'').trim();
+  const peso=parseFloat(document.getElementById('extra-peso')?.value||'0')||0;
+  const series=parseInt(document.getElementById('extra-series')?.value||'3')||3;
+  const repes=parseInt(document.getElementById('extra-repes')?.value||'10')||10;
+  if(!name){showSimpleToast('Escribe el nombre del ejercicio','warn');return;}
+  const di=S.sessDay;
+  const extraEx={name,peso,series,repes,method:'RIR',hasPcts:false,
+    isBodyweight:false,warmupSeries:0,_extraHoy:true};
+  CU.days[di].exs.push(extraEx);
+  // Freeze peso for this week
+  const ei=CU.days[di].exs.length-1;
+  S.pesoSemana[S.wk+'_'+di+'_'+ei]=peso;
+  // Also save to inventory
+  if(name) addEx(name,{desc:'Ejercicio extra'});
+  saveState();closeModal();rSess();
+  showSimpleToast('"'+name+'" añadido a la sesión de hoy','success');
+}
+
 function rSess(){
   document.getElementById('ent-home').style.display='none';
   const el=document.getElementById('ent-sess');el.style.display='block';
@@ -1622,6 +1997,7 @@ function rSess(){
       <div class="sess-pct">${pct}%</div>
     </div>
     ${exHtml}
+    <div style="margin:8px 0 4px"><button onclick="openAddExtraEx()" style="width:100%;padding:10px;border-radius:10px;border:1px dashed var(--border);background:transparent;font-family:var(--font);font-size:13px;color:var(--text2);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16"><path d="M8 2v12M2 8h12"/></svg>Añadir ejercicio extra hoy</button></div>
     <div class="timer-bar">
       <span style="font-size:12px;color:var(--text2)">Descanso</span>
       <button class="bsm" onclick="setTimer(60)">60s</button>
@@ -1892,6 +2268,8 @@ function confirmRbEx(){
   S.rb.days[di].exs.push({name,peso:p.peso,series:p.series,repes:p.repes,method:p.method,
     hasPcts:false,isBodyweight:false,warmupSeries:0});
   renderRoutineBuilder();
+  // Refresh Entrenamiento tab without clearing frozen weights
+  if(S.tab==='ent') renderEntHome();
 }
 function saveRoutine(){
   const rb=S.rb;
@@ -1922,7 +2300,7 @@ function openTecnica(exName){
         '<span style="font-size:11px;font-weight:500;color:var(--accent)">'+(native.muscles||'—')+'</span></div>'+
       '<p style="font-size:13px;color:var(--text2);line-height:1.7;margin-bottom:14px">'+native.desc+'</p>'+
       tipsHtml+
-      '<div class="mact"><button class="bcanc" onclick="closeModal()">Cerrar</button></div>';
+      '<div style="margin-top:4px;padding-top:12px;border-top:1px solid var(--border)">'+      '<button onclick="closeModal();setTimeout(()=>openSetupNote(\''+exName.replace(/'/g,"\\'")+'\'\),50)"'+      ' style="display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);font-family:var(--font);font-size:12px;cursor:pointer;color:var(--text2)">'+      '📐'+(getSetupNote(exName)?'<span style="color:var(--accent)"> ✓ Mi setup</span>':' Añadir mi setup')+'</button>'+      '</div>'+'<div class="mact"><button class="bcanc" onclick="closeModal()">Cerrar</button></div>';
   } else {
     const currentDesc=(custom&&custom.desc)||'';
     document.getElementById('mcont').innerHTML=
@@ -2385,7 +2763,7 @@ function exportJSON(){
   };
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob);const a=document.createElement('a');
-  a.href=url;a.download='diario_entreno_'+AUTH.currentUser.username+'_'+new Date().toISOString().slice(0,10)+'.json';
+  a.href=url;a.download='diario_entreno_v19_'+AUTH.currentUser.username+'_'+new Date().toISOString().slice(0,10)+'.json';
   a.click();URL.revokeObjectURL(url);
   showSimpleToast('Backup descargado (incluye ejercicios personalizados)','success');
 }
@@ -2461,54 +2839,79 @@ function openMeso(){
   openModal();
 }
 function closeMeso(){
-  if(!confirm('¿Cerrar mesociclo? Se guardará en el historial y los pesos de la S3 pasarán a ser la base de la nueva S1.')) return;
+  if(!confirm('¿Cerrar mesociclo? Se guardará en el historial y los pesos actualizados quedarán como base de la nueva S1.')) return;
 
-  // 1. Deep-clone histórico completo (foto inmutable del ciclo)
+  // ── 1. Historial: foto inmutable del ciclo completo ─────────────────────
   S.history.unshift({
-    date:     new Date().toLocaleDateString('es-ES'),
-    routine:  S.routines.find(r=>r.id===S.currentRoutineId)?.name||'Rutina',
-    days:     JSON.parse(JSON.stringify(CU.days)),
-    weeks:    JSON.parse(JSON.stringify(S.weeks)),
-    reps:     JSON.parse(JSON.stringify(S.reps)),
-    sets:     JSON.parse(JSON.stringify(S.sets)),
+    date:       new Date().toLocaleDateString('es-ES'),
+    routine:    S.routines.find(r=>r.id===S.currentRoutineId)?.name||'Rutina',
+    days:       JSON.parse(JSON.stringify(CU.days)),
+    weeks:      JSON.parse(JSON.stringify(S.weeks)),
+    reps:       JSON.parse(JSON.stringify(S.reps)),
+    sets:       JSON.parse(JSON.stringify(S.sets)),
     pesoSemana: JSON.parse(JSON.stringify(S.pesoSemana)),
   });
 
-  // 2. Promocionar pesos sobre los días existentes (NO mkDefaultDays)
-  //    Prioridad: proximoPesoSugerido > S3 congelado > ex.peso actual
-  //    No se tocan: ex.method, ex.series, ex.repes, ex.name, ex.hasPcts
+  // ── 2. Mapa de pesos por NOMBRE (transferible entre rutinas) ────────────
+  // Prioridad: proximoPesoSugerido (aceptado en S3) > S3 congelado > ex.peso
+  const mapaPesos={};
   CU.days.forEach((day,di)=>{
     day.exs.forEach((ex,ei)=>{
-      const suggested  = ex.proximoPesoSugerido;
-      const s3frozen   = S.pesoSemana['2_'+di+'_'+ei];
-      const newPeso =
-        (suggested!==undefined && suggested!==null) ? suggested :
-        (s3frozen!==undefined)                       ? s3frozen  :
+      const s3frozen=S.pesoSemana['2_'+di+'_'+ei];
+      mapaPesos[ex.name]=
+        (ex.proximoPesoSugerido!=null) ? ex.proximoPesoSugerido :
+        (s3frozen!=null)               ? s3frozen :
         ex.peso;
-      ex.peso  = newPeso;
-      ex.e1rm  = newPeso;
+    });
+  });
+
+  // ── 3. Aplicar pesos a TODAS las rutinas por nombre ─────────────────────
+  // No toca: method, series, repes, name, hasPcts — solo peso y e1rm
+  S.routines.forEach(rut=>{
+    if(!rut.days) return;
+    rut.days.forEach(day=>{
+      if(!day.exs) return;
+      day.exs.forEach(ex=>{
+        if(mapaPesos[ex.name]!==undefined){
+          ex.peso=mapaPesos[ex.name];
+          ex.e1rm=mapaPesos[ex.name];
+        }
+        delete ex.proximoPesoSugerido;
+        delete ex._nextPeso;
+      });
+    });
+  });
+
+  // También actualizar CU.days directamente (puede no coincidir con S.routines
+  // si el usuario edita sin guardar en la rutina)
+  CU.days.forEach(day=>{
+    day.exs.forEach(ex=>{
+      if(mapaPesos[ex.name]!==undefined){
+        ex.peso=mapaPesos[ex.name];
+        ex.e1rm=mapaPesos[ex.name];
+      }
       delete ex.proximoPesoSugerido;
       delete ex._nextPeso;
     });
   });
 
-  // 3. Resetear estado de ejecución — mantener estructura de días y rutina
+  // ── 4. Resetear estado de ejecución — S.currentRoutineId NO se toca ─────
   S.wk=0; S.reps={}; S.sets={}; S.notes={}; S.notesOpen={}; S.sessDay=null;
   S.steps=mkSteps();
   S.pesoSemana={}; // hoja en blanco para el nuevo ciclo
 
-  // 4. Pre-congelar S1 con los pesos recién promocionados
+  // ── 5. Pre-congelar S1 con los pesos por nombre ──────────────────────────
   CU.days.forEach((day,di)=>{
     day.exs.forEach((ex,ei)=>{
       S.pesoSemana['0_'+di+'_'+ei]=ex.peso;
     });
   });
 
-  // 5. Persistir — un refresh arranca con la nueva S1 correcta
+  // ── 6. Persistir y navegar ───────────────────────────────────────────────
   saveState();
   closeModal();
-  render();
-  showSimpleToast('¡Mesociclo cerrado! Nueva S1 lista con los pesos del ciclo anterior.','success');
+  renderEntHome(); // refresh training tab with new S1
+  showSimpleToast('¡Mesociclo cerrado! Nueva S1 lista con fuerzas actualizadas.','success');
 }
 
 
