@@ -252,6 +252,18 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
 .peso-lbl.lado{border-color:var(--accent-m);color:var(--accent);background:var(--accent-l)}
 /* ── Export/Import Rutinas buttons ── */
 .rout-io-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+/* ── Export individual de rutina ── */
+.rout-card-export{position:absolute;top:10px;right:10px;width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text2);transition:all .15s;padding:8px}
+.rout-card-export:hover{border-color:var(--accent-m);color:var(--accent);background:var(--accent-l)}
+.rout-card.current .rout-card-export{top:38px}
+/* ── Controles móviles: ordenar y editar ejercicios/días en el diseñador ── */
+.rb-row-actions{display:flex;align-items:center;gap:4px;flex-shrink:0}
+.rb-arrow-btn{width:30px;height:30px;min-width:30px;border-radius:7px;border:1px solid var(--border);background:var(--surface);font-size:12px;line-height:1;color:var(--text2);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:9px;transition:all .15s}
+.rb-arrow-btn:hover{border-color:var(--accent-m);color:var(--accent);background:var(--accent-l)}
+.rb-arrow-btn:disabled{opacity:.3;cursor:default;pointer-events:none}
+.rb-edit-btn{width:30px;height:30px;min-width:30px;border-radius:7px;border:1px solid var(--accent-m);background:var(--accent-l);color:var(--accent);font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:9px;transition:all .15s}
+.rb-edit-btn:hover{opacity:.8}
+.rb-day-actions{display:flex;align-items:center;gap:4px;flex-shrink:0}
 @media(max-width:700px){
   .layout{grid-template-columns:1fr}
   .sidebar{position:static;height:auto;padding:12px;flex-direction:row;flex-wrap:wrap;gap:8px;border-right:none;border-bottom:1px solid var(--border)}
@@ -1686,6 +1698,9 @@ function rRut(){
     const isCur=r.id===S.currentRoutineId;
     return`<div class="rout-card${isCur?' current':''}">
       ${isCur?`<div class="rout-card-badge">Activa</div>`:''}
+      <button class="rout-card-export" title="Exportar esta rutina" onclick="exportSingleRoutine('${r.id}')">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16"><path d="M3 12h10M8 3v7M5 7l3 3 3-3"/></svg>
+      </button>
       <div class="rout-name">${r.name}</div>
       <div class="rout-sub">${r.split}${r.days?` · ${r.days.length} días`:''}</div>
       <div class="rout-actions">
@@ -1704,7 +1719,7 @@ function rRut(){
           <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16"><path d="M3 12h10M8 3v7M5 7l3 3 3-3"/></svg>Exportar Rutinas
         </button>
         <label class="bsm" style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16"><path d="M3 12h10M8 10V3M5 6l3-3 3 3"/></svg>Importar Rutinas
+          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 16 16"><path d="M3 12h10M8 10V3M5 6l3-3 3 3"/></svg>Importar Rutina(s)
           <input type="file" accept=".json" onchange="importRoutines(event)" style="display:none">
         </label>
       </div>
@@ -1771,7 +1786,9 @@ function renderRoutineBuilder(){
       if(rb.split==='Personalizado')rb.days=[{title:'Día 1',exs:[]}];
       else rb.days=splitInfo.days.map((t,i)=>({title:`Día ${i+1} — ${t}`,exs:[]}));
     }
+    const totalDays=rb.days.length;
     const daysHtml=rb.days.map((day,di)=>{
+      const totalEx=day.exs.length;
       const exRows=day.exs.map((ex,ei)=>`
         <div class="rb-ex-item" id="rbex-${di}-${ei}">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -1782,18 +1799,22 @@ function renderRoutineBuilder(){
             <span style="font-size:11px;color:var(--text3)">x</span>
             <input class="rout-ex-num" type="number" min="1" max="30" value="${ex.repes}" title="Reps" oninput="S.rb.days[${di}].exs[${ei}].repes=parseInt(this.value)||1" style="width:46px">
             <select style="padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-family:var(--font);font-size:11px;color:var(--text)" onchange="S.rb.days[${di}].exs[${ei}].method=this.value">${METHODS.map(m=>`<option${ex.method===m?' selected':''}>${m}</option>`).join('')}</select>
-            <button class="bxs" style="color:var(--danger);flex-shrink:0" onclick="S.rb.days[${di}].exs.splice(${ei},1);renderRoutineBuilder()">✕</button>
+            <div class="rb-row-actions">
+              <button class="rb-arrow-btn" title="Subir" ${ei===0?'disabled':''} onclick="moveRbEx(${di},${ei},-1)">▲</button>
+              <button class="rb-arrow-btn" title="Bajar" ${ei===totalEx-1?'disabled':''} onclick="moveRbEx(${di},${ei},1)">▼</button>
+              <button class="rb-edit-btn" title="Editar ejercicio" onclick="openRbEditEx(${di},${ei})">✎</button>
+              <button class="bxs" style="color:var(--danger);flex-shrink:0" onclick="S.rb.days[${di}].exs.splice(${ei},1);renderRoutineBuilder()">✕</button>
+            </div>
           </div>
         </div>`).join('');
-      return`<div class="rout-day-row" draggable="true"
-        ondragstart="S.rb._drag=${di}"
-        ondragover="event.preventDefault()"
-        ondrop="if(S.rb._drag!==null&&S.rb._drag!==${di}){const _a=S.rb.days.splice(S.rb._drag,1)[0];S.rb.days.splice(${di},0,_a);S.rb._drag=null;renderRoutineBuilder()}"
-        style="cursor:grab">
+      return`<div class="rout-day-row">
         <div class="rout-day-title">
-          <span style="font-size:16px;color:var(--text3);margin-right:6px;cursor:grab;flex-shrink:0" title="Arrastra para reordenar">⠿</span>
           <input style="font-size:13px;font-weight:600;border:none;background:transparent;font-family:var(--font);color:var(--text);flex:1;min-width:0" value="${day.title}" oninput="S.rb.days[${di}].title=this.value">
-          <button class="bxs" style="color:var(--danger);flex-shrink:0" onclick="S.rb.days.splice(${di},1);renderRoutineBuilder()">Eliminar día</button>
+          <div class="rb-day-actions">
+            <button class="rb-arrow-btn" title="Subir día" ${di===0?'disabled':''} onclick="moveRbDay(${di},-1)">▲</button>
+            <button class="rb-arrow-btn" title="Bajar día" ${di===totalDays-1?'disabled':''} onclick="moveRbDay(${di},1)">▼</button>
+            <button class="bxs" style="color:var(--danger);flex-shrink:0" onclick="S.rb.days.splice(${di},1);renderRoutineBuilder()">Eliminar día</button>
+          </div>
         </div>
         ${exRows?`<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">${exRows}</div>`:'<p style="font-size:12px;color:var(--text3);margin-bottom:8px;font-style:italic">Sin ejercicios aún. Pulsa el botón para añadir.</p>'}
         <button class="bxs" style="border-color:var(--accent-m);color:var(--accent)" onclick="openRbExPicker(${di})">+ Añadir ejercicio</button>
@@ -1811,6 +1832,80 @@ function renderRoutineBuilder(){
   }
 }
 function rbNext(){if(S.rb.split){S.rb.step=2;renderRoutineBuilder();}}
+
+// ── Controles directos de ordenación (sustituyen al drag&drop táctil) ──
+function moveRbDay(di,dir){
+  const days=S.rb.days;const ni=di+dir;
+  if(ni<0||ni>=days.length)return;
+  const tmp=days[di];days[di]=days[ni];days[ni]=tmp;
+  renderRoutineBuilder();
+}
+function moveRbEx(di,ei,dir){
+  const exs=S.rb.days[di].exs;const ni=ei+dir;
+  if(ni<0||ni>=exs.length)return;
+  const tmp=exs[ei];exs[ei]=exs[ni];exs[ni]=tmp;
+  renderRoutineBuilder();
+}
+
+// ── Edición de un ejercicio directamente en la plantilla de la rutina ──
+function openRbEditEx(di,ei){
+  const ex=S.rb.days[di].exs[ei];
+  S.rbEdit={di,ei,selMuscle:null,selTipo:null,selEx:ex.name,customEx:'',
+    series:ex.series,repes:ex.repes,peso:ex.peso||0,method:ex.method||S.rb.globalMethod||'RIR',
+    isBodyweight:!!ex.isBodyweight,warmupSeries:ex.warmupSeries||0};
+  renderRbEditModal();
+}
+function renderRbEditModal(){
+  const d=S.rbEdit;const ex=S.rb.days[d.di].exs[d.ei];
+  const cont=document.getElementById('mcont');cont.className='modal wide';
+  const _invKeys=Object.keys(S.inventory||{});
+  const _allGroups=[...Object.keys(MUSCLES),...(_invKeys.length?['Mis ejercicios']:[])];
+  const mGrid=_allGroups.map(m=>`<div class="mopt${d.selMuscle===m?' on':''}" onclick="S.rbEdit.selMuscle='${m}';S.rbEdit.selTipo=null;S.rbEdit.selEx=null;renderRbEditModal()">${m}</div>`).join('');
+  let exList='';
+  if(d.selMuscle){
+    const _dbExs=d.selMuscle==='Mis ejercicios'
+      ? Object.values(S.inventory||{}).map(e=>({n:e.n||e,t:e.t||'custom'}))
+      : (EXERCISE_DB[d.selMuscle]||[]);
+    const _tipos=[...new Set(_dbExs.map(e=>e.t))];
+    const _tipoF=_tipos.map(t=>'<button class="bsm'+(d.selTipo===t?' on':'')+'" style="font-size:11px;padding:3px 9px" onclick="S.rbEdit.selTipo=S.rbEdit.selTipo===\''+t+'\'?null:\''+t+'\';renderRbEditModal()">'+TIPO_LABELS[t]+'</button>').join('');
+    const _filtered=d.selTipo?_dbExs.filter(e=>e.t===d.selTipo):_dbExs;
+    const opts=_filtered.map(e=>'<div class="mopt'+(d.selEx===e.n?' on':'')+'" onclick="S.rbEdit.selEx=\''+e.n+'\';renderRbEditModal()">'+e.n+'</div>').join('');
+    exList='<div style="display:flex;gap:5px;flex-wrap:wrap;margin:8px 0 10px">'+_tipoF+'</div>'
+      +'<div class="sec-lbl" style="margin-bottom:7px">Ejercicio</div>'
+      +'<div class="exlist">'+opts+'</div>'
+      +'<div class="form-row" style="margin-top:6px"><label class="form-lbl">O escribe uno propio</label>'+
+      '<input class="finp" type="text" placeholder="Nombre del ejercicio..." value="'+(d.customEx||'')+'"'+
+      ' oninput="S.rbEdit.customEx=this.value;S.rbEdit.selEx=this.value"'+
+      ' onkeydown="if(event.key===\'Enter\'){const nm=this.value.trim();if(nm){S.rbEdit.selEx=nm;S.rbEdit.customEx=nm;applyRbEditEx();}}">'+
+      '</div>';
+  }
+  const methOpts=METHODS.map(m=>`<option value="${m}"${d.method===m?' selected':''}>${m}</option>`).join('');
+  cont.innerHTML=`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+      <button class="bcanc" style="padding:6px 12px;font-size:12px" onclick="renderRoutineBuilder()">← Volver</button>
+      <div class="modal-title" style="margin:0">Editar: ${ex.name}</div>
+    </div>
+    <div class="sec-lbl">Grupo muscular</div>
+    <div class="mgrid">${mGrid}</div>${exList}
+    <div class="form-row" style="margin-top:${d.selMuscle?'4':'0'}px">
+      <label class="form-lbl">Series efectivas</label><input class="finp" type="number" min="1" max="12" value="${d.series}" oninput="S.rbEdit.series=parseInt(this.value)||1">
+    </div>
+    <div class="form-row"><label class="form-lbl">Series aproximación</label><input class="finp" type="number" min="0" max="5" value="${d.warmupSeries||0}" oninput="S.rbEdit.warmupSeries=parseInt(this.value)||0" placeholder="0 = ninguna"></div>
+    <div class="form-row"><label class="form-lbl">Reps base</label><input class="finp" type="number" min="1" max="30" value="${d.repes}" oninput="S.rbEdit.repes=parseInt(this.value)||1"></div>
+    <div class="form-row"><label class="form-lbl">${d.isBodyweight?"Lastre extra (kg, 0 = solo peso corporal)":"Peso base (kg)"}</label><input class="finp" type="number" min="0" max="500" step="0.25" value="${d.peso}" oninput="S.rbEdit.peso=parseFloat(this.value)||0"></div>
+    <div class="form-row"><label class="form-lbl">Peso corporal</label><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ${d.isBodyweight?"checked":""} onchange="S.rbEdit.isBodyweight=this.checked;renderRbEditModal()" style="width:16px;height:16px;accent-color:var(--accent)"><span style="font-size:13px">Ejercicio con peso corporal (+ lastre opcional)</span></label></div>
+    <div class="form-row"><label class="form-lbl">Método progresión</label><select class="fsel" onchange="S.rbEdit.method=this.value;renderRbEditModal()">${methOpts}</select></div>
+    <div class="mact"><button class="bcanc" onclick="renderRoutineBuilder()">Cancelar</button><button class="bprim" onclick="applyRbEditEx()">Guardar</button></div>`;
+}
+function applyRbEditEx(){
+  const d=S.rbEdit;const ex=S.rb.days[d.di].exs[d.ei];
+  if(d.selEx)ex.name=d.selEx;
+  ex.series=d.series;ex.repes=d.repes;ex.method=d.method;
+  ex.peso=d.peso;ex.isBodyweight=!!d.isBodyweight;ex.warmupSeries=d.warmupSeries||0;
+  if(d.customEx&&d.customEx.trim()) addEx(d.customEx.trim(), {muscle:d.selMuscle||''});
+  S.rbEdit=null;
+  renderRoutineBuilder();
+}
 
 // Defaults per method
 const METHOD_DEFAULTS={'RIR':{series:3,repes:8},'5x5':{series:5,repes:5},'5/3/1':{series:3,repes:5},'Pirámide':{series:4,repes:8},'AMRAP':{series:3,repes:10},'Cluster':{series:5,repes:4},'Rampa':{series:4,repes:6}};
@@ -2483,6 +2578,44 @@ function saveMet(){
 }
 
 // ═══════════════════════════════════════════
+// EXPORTAR / IMPORTAR RUTINA INDIVIDUAL
+// ═══════════════════════════════════════════
+function exportSingleRoutine(id){
+  if(!AUTH.currentUser)return;
+  const r=S.routines.find(x=>x.id===id);
+  if(!r){showSimpleToast('No se encontró la rutina','warn');return;}
+  // Plantilla limpia: solo nombre, días, ejercicios y peso base. Sin historial ni progreso de sesión.
+  const payload={
+    _type:'dre_routine_single_v1',
+    _exported:new Date().toISOString().slice(0,10),
+    routine:{
+      name:r.name, split:r.split, globalMethod:r.globalMethod||'RIR',
+      days:(r.id===S.currentRoutineId?CU.days:r.days||[]).map(d=>({
+        title:d.title,
+        exs:d.exs.map(ex=>({
+          name:ex.name,
+          peso:ex.peso,
+          series:ex.series,
+          repes:ex.repes,
+          method:ex.method||'RIR',
+          hasPcts:!!ex.hasPcts,
+          isBodyweight:!!ex.isBodyweight,
+          warmupSeries:ex.warmupSeries||0,
+          weightType:ex.weightType||'total',
+          setupNotes:ex.setupNotes||'',
+        })),
+      })),
+    },
+  };
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);const a=document.createElement('a');
+  const safeName=(r.name||'rutina').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')||'rutina';
+  a.href=url;a.download='rutina_'+safeName+'_'+new Date().toISOString().slice(0,10)+'.json';
+  a.click();URL.revokeObjectURL(url);
+  showSimpleToast('Rutina "'+r.name+'" exportada','success');
+}
+
+// ═══════════════════════════════════════════
 // EXPORTAR / IMPORTAR RUTINAS (limpio, sin historial)
 // ═══════════════════════════════════════════
 function exportRoutines(){
@@ -2522,8 +2655,29 @@ function importRoutines(ev){
   reader.onload=function(e){
     try{
       const obj=JSON.parse(e.target.result);
-      // Validar estructura mínima
       if(!obj||typeof obj!=='object')throw new Error('JSON inválido');
+
+      // ── Caso 1: archivo de UNA SOLA RUTINA → siempre se SUMA al catálogo con ID nuevo ──
+      if(obj._type==='dre_routine_single_v1'){
+        const r=obj.routine;
+        if(!r||!r.name)throw new Error('El archivo no contiene una rutina válida.');
+        if(!Array.isArray(r.days))throw new Error('Rutina "'+(r.name||'')+'" sin días definidos.');
+        const newId='r_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+        const newRoutine={
+          id:newId, name:r.name, split:r.split||'Personalizado', globalMethod:r.globalMethod||'RIR',
+          days:(r.days||[]).map(d=>({
+            title:d.title,
+            exs:(d.exs||[]).map(ex=>Object.assign({weightType:'total',setupNotes:''},ex)),
+          })),
+        };
+        S.routines.push(newRoutine);
+        saveState();rRut();
+        showSimpleToast('Rutina "'+newRoutine.name+'" importada y añadida a tu catálogo','success');
+        ev.target.value='';
+        return;
+      }
+
+      // ── Caso 2: archivo de copia masiva de varias rutinas ──
       if(obj._type!=='dre_routines_v1')throw new Error('Este archivo no es un export de rutinas. Usa "Importar JSON" para copias de seguridad completas.');
       if(!Array.isArray(obj.routines)||!obj.routines.length)throw new Error('No se encontraron rutinas en el archivo.');
       // Validar cada rutina
